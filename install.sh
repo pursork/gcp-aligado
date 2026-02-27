@@ -5,7 +5,7 @@ set -euo pipefail
 readonly INSTALL_PATH="/usr/local/sbin/cdn_ip_ban.sh"
 readonly LINK_PATH="/usr/local/bin/cdn-ip-ban"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SOURCE_SCRIPT="$SCRIPT_DIR/cdn_ip_ban.sh"
 RAW_BASE_URL=""
 EXPECTED_SHA256=""
