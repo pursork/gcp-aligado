@@ -1,4 +1,4 @@
-# CDN IP Ban Script (GCP)
+# GCP FREE SCHEDULE
 
 用于在 GCP Linux 实例上批量封禁 CDN 段（Akamai、Fastly、Cloudflare），减少经由公共 CDN 的访问暴露面，提升网络侧隐私隔离能力。
 

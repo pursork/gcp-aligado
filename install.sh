@@ -4,9 +4,12 @@ set -euo pipefail
 
 readonly INSTALL_PATH="/usr/local/sbin/cdn_ip_ban.sh"
 readonly LINK_PATH="/usr/local/bin/cdn-ip-ban"
+readonly TPROXY_INSTALL_PATH="/usr/local/sbin/cdn_tproxy.sh"
+readonly TPROXY_LINK_PATH="/usr/local/bin/cdn-ip-ban-tproxy"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SOURCE_SCRIPT="$SCRIPT_DIR/cdn_ip_ban.sh"
+SOURCE_TPROXY="$SCRIPT_DIR/transparent_proxy.sh"
 RAW_BASE_URL=""
 EXPECTED_SHA256=""
 AUTO_APPLY=true
@@ -126,9 +129,40 @@ main() {
 
     mv -f "$staged_path" "$INSTALL_PATH"
     ln -sf "$INSTALL_PATH" "$LINK_PATH"
-
     echo "[INFO] Installed: $INSTALL_PATH"
     echo "[INFO] Symlink:   $LINK_PATH"
+
+    # Install transparent_proxy.sh (cdn-ip-ban-tproxy)
+    local staged_tproxy
+    staged_tproxy=$(mktemp)
+    local tproxy_ok=false
+
+    if [[ -f "$SOURCE_TPROXY" ]]; then
+        cp "$SOURCE_TPROXY" "$staged_tproxy"
+        tproxy_ok=true
+    elif [[ -n "$RAW_BASE_URL" ]]; then
+        if download_script "${RAW_BASE_URL%/}/transparent_proxy.sh" "$staged_tproxy" 2>/dev/null; then
+            tproxy_ok=true
+        else
+            echo "[WARNING] Could not download transparent_proxy.sh; transparent proxy will not be available" >&2
+        fi
+    fi
+
+    if [[ "$tproxy_ok" = true ]]; then
+        chmod 755 "$staged_tproxy"
+        if [[ -f "$TPROXY_INSTALL_PATH" ]]; then
+            local tproxy_backup
+            tproxy_backup="${TPROXY_INSTALL_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+            cp "$TPROXY_INSTALL_PATH" "$tproxy_backup"
+            echo "[INFO] Backup:    $tproxy_backup"
+        fi
+        mv -f "$staged_tproxy" "$TPROXY_INSTALL_PATH"
+        ln -sf "$TPROXY_INSTALL_PATH" "$TPROXY_LINK_PATH"
+        echo "[INFO] Installed: $TPROXY_INSTALL_PATH"
+        echo "[INFO] Symlink:   $TPROXY_LINK_PATH"
+    else
+        rm -f "$staged_tproxy"
+    fi
 
     if [[ "$AUTO_APPLY" = true ]]; then
         "$INSTALL_PATH" install "${APPLY_ARGS[@]}"

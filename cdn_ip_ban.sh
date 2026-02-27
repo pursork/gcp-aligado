@@ -1,35 +1,34 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 ################################################################################
-# cdn_ip_ban.sh - Block CDN IP addresses using iptables
-#
-# Description:
-#   This script downloads the latest IP lists from multiple CDN providers
-#   and blocks both inbound and outbound traffic using ipset + iptables.
-#
-# Usage:
-#   sudo ./cdn_ip_ban.sh [install|uninstall|update|status] [OPTIONS]
+# cdn_ip_ban.sh - Block CDN IP addresses using iptables # 基于iptables的CND IP阻断工具
+# Author：pursuer-[nodeseek.com]
+# Description/简介:
+#   This script downloads the latest IP lists from multiple CDN providers and blocks both inbound and outbound traffic using ipset + iptables.
+#   该脚本从多个CDN提供商下载最新的IP列表，并使用ipset + iptables同时阻止入站和出站流量。
+# Usage/用法:
+#   ./cdn_ip_ban.sh [install|uninstall|update|status] [OPTIONS] # 基本用法：安装/卸载/更新/状态；Basic usage: Install/Uninstall/Update/Status
 #   ./cdn_ip_ban.sh proxy-run --target=HOST -- command [args...]
-#   sudo ./cdn_ip_ban.sh bypass-init
-#   ./cdn_ip_ban.sh bypass-status
+#   ./cdn_ip_ban.sh bypass-init
+#   ./cdn_ip_ban.sh bypass-status # 查看现在白名单绕过状态/Check the current whitelist bypass status
 #
-# Options:
-#   --provider=PROVIDER   Specify CDN provider (akamai, fastly, all)
-#                         Default: all
-#   --ipv6                Include IPv6 addresses (default: IPv4 only)
-#   --target=HOST         Used by proxy-run to decide whitelist matching
-#   --socks5=URL          Override SOCKS5 URL for current proxy-run
+# Options/参数:
+#   --provider=PROVIDER   Specify CDN provider # 选择CDN封锁对象 (akamai, fastly, all)
+#                         Default # 默认: all
+#   --ipv6                Include IPv6 addresses (default: IPv4 only) # 默认只封锁IPV4，加上此参数，同时再封锁ipv6
+#   --target=HOST         Used by proxy-run to decide whitelist matching # 由proxy-run用于决定白名单匹配
+#   --socks5=URL          Override SOCKS5 URL for current proxy-run # 覆盖当前代理运行的 SOCKS5 URL
 #
-# Requirements:
-#   - Debian 12 or compatible Linux distribution
-#   - Root privileges
+# Requirements/依赖:
+#   - Debian 12 or compatible Linux distribution # 目前只测试过Debian13系统/Currently only tested on Debian 13 system
+#   - Root privileges # 测试只在root权限下测试过/Testing was only conducted under root privileges.
 #   - iptables/ipset, iptables-persistent, ipset-persistent packages
 #   - jq (for JSON parsing)
 ################################################################################
 
 set -euo pipefail
 
-# Configuration
+# Configuration # 变量配置区
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly LOG_FILE="/var/log/cdn_ip_ban.log"
 readonly LOCK_FILE="/var/run/cdn_ip_ban.lock"
@@ -41,7 +40,7 @@ readonly BYPASS_COMMUNITY_URL="https://raw.githubusercontent.com/pursork/gcp-ali
 readonly BYPASS_COMMUNITY_BEGIN="# == community entries (auto-synced, do not edit this section manually) =="
 readonly BYPASS_COMMUNITY_END="# == end community entries =="
 
-# CDN Provider Configurations
+# CDN Provider Configurations # CDN 提供商配置
 declare -A CDN_PROVIDERS=(
     ["akamai_name"]="Akamai"
     ["akamai_url"]="https://raw.githubusercontent.com/platformbuilds/Akamai-ASN-and-IPs-List/master/akamai_ip_list.lst"
@@ -63,14 +62,15 @@ declare -A CDN_PROVIDERS=(
     ["cloudflare_file"]="$IP_LIST_DIR/cloudflare_ips.txt"
 )
 
-# Optional source overrides (environment variables)
+# Optional source overrides (environment variables) # 自行配置封锁对象
 [[ -n "${AKAMAI_IP_LIST_URL:-}" ]] && CDN_PROVIDERS["akamai_url"]="$AKAMAI_IP_LIST_URL"
 [[ -n "${FASTLY_IP_LIST_URL:-}" ]] && CDN_PROVIDERS["fastly_url"]="$FASTLY_IP_LIST_URL"
 [[ -n "${CLOUDFLARE_IP_LIST_V4_URL:-}" ]] && CDN_PROVIDERS["cloudflare_url"]="$CLOUDFLARE_IP_LIST_V4_URL"
 [[ -n "${CLOUDFLARE_IP_LIST_V6_URL:-}" ]] && CDN_PROVIDERS["cloudflare_url_ipv6"]="$CLOUDFLARE_IP_LIST_V6_URL"
 
-# Default options
-ENABLE_IPV6=false
+# Default options # 默认参数配置
+ENABLE_IPV6=true
+PROXY_AUTO=true    # Set to false to skip transparent proxy setup during install/uninstall
 SELECTED_PROVIDERS="all"
 PROXY_TARGET=""
 SOCKS5_PROXY_OVERRIDE=""
@@ -95,6 +95,7 @@ log() {
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
+    # 建议root权限
     # status/proxy-run can be non-root; logging must not break main flow.
     if [[ -w "$LOG_FILE" ]] || [[ ! -e "$LOG_FILE" && -w "$(dirname "$LOG_FILE")" ]]; then
         echo "[${timestamp}] [${level}] ${message}" | tee -a "$LOG_FILE" >/dev/null || true
@@ -125,7 +126,7 @@ print_error() {
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        print_error "This script must be run as root"
+        print_error "This script must be run as root/脚本需要root权限"
         exit 1
     fi
 }
@@ -136,7 +137,7 @@ acquire_lock() {
         ( set -o noclobber; echo "$$" > "$LOCK_FILE" ) 2>/dev/null || {
             local pid
             pid=$(cat "$LOCK_FILE" 2>/dev/null || true)
-            print_error "Another instance is already running (PID: ${pid:-unknown})"
+            print_error "Another instance is already running/建议看看是否进程是否冲突 (PID: ${pid:-unknown})"
             exit 1
         }
         trap 'rm -f "$LOCK_FILE"' EXIT INT TERM
@@ -147,7 +148,7 @@ acquire_lock() {
     if ! flock -n 200; then
         local pid
         pid=$(cat "$LOCK_FILE" 2>/dev/null || true)
-        print_error "Another instance is already running (PID: ${pid:-unknown})"
+        print_error "Another instance is already running/建议看看是否进程是否冲突 (PID: ${pid:-unknown})"
         exit 1
     fi
 
@@ -183,8 +184,8 @@ check_dependencies() {
     fi
 
     if [[ ${#missing_deps[@]} -gt 0 ]]; then
-        print_error "Missing required dependencies: ${missing_deps[*]}"
-        print_info "Installing dependencies..."
+        print_error "Missing required dependencies/发现缺少依赖: ${missing_deps[*]}"
+        print_info "Installing dependencies/安装依赖..."
         apt-get update -qq
         apt-get install -y iptables ipset ipset-persistent curl jq iptables-persistent util-linux
     fi
@@ -217,15 +218,15 @@ validate_selected_providers() {
     local provider
     for provider in $providers; do
         if ! validate_provider "$provider"; then
-            print_error "Unsupported provider: $provider"
-            print_info "Supported providers: akamai, fastly, cloudflare, all"
+            print_error "Unsupported provider/不支持: $provider"
+            print_info "Supported providers/支持: akamai, fastly, cloudflare, all"
             exit 1
         fi
     done
 }
 
 ################################################################################
-# Optional SOCKS5 Bypass
+# Optional SOCKS5 Bypass # 配置S5代理
 ################################################################################
 
 ensure_bypass_files() {
@@ -233,14 +234,14 @@ ensure_bypass_files() {
 
     if [[ ! -f "$BYPASS_LIST_FILE" ]]; then
         cat > "$BYPASS_LIST_FILE" << EOF
-# CDN bypass whitelist
+# CDN bypass whitelist # 白名单
 # One entry per line. Blank lines and # comments are ignored.
 #
-# Domain suffix match:  example.com  (also matches sub.example.com)
-# Exact IP match:       203.0.113.10
+# Domain suffix match/用suffix匹配:  example.com  (also matches sub.example.com)
+# Exact IP match/具体IP匹配:       203.0.113.10
 #
-# The community section below is managed automatically by bypass-init / bypass-update.
-# Add your own entries AFTER the community section.
+# The community section below is managed automatically by bypass-init / bypass-update. # 仓库提供了一份维护的白名单
+# Add your own entries AFTER the community section. # 同时也建议自行配置
 
 $BYPASS_COMMUNITY_BEGIN
 $BYPASS_COMMUNITY_END
@@ -249,20 +250,22 @@ $BYPASS_COMMUNITY_END
 EOF
         chmod 644 "$BYPASS_LIST_FILE"
         created_any=true
-        print_info "Created whitelist file: $BYPASS_LIST_FILE"
+        print_info "Created whitelist file/创建白名单文件: $BYPASS_LIST_FILE"
         # Populate community section immediately
         fetch_community_whitelist || true
     fi
 
     if [[ ! -f "$BYPASS_PROXY_CONF" ]]; then
         cat > "$BYPASS_PROXY_CONF" << EOF
-# Bypass configuration for cdn_ip_ban.sh
-#
+# Bypass configuration for cdn_ip_ban.sh # 配置代理
+# 开启/关闭
 # ENABLED: set to true to activate SOCKS5 bypass for whitelisted targets.
 #          Set to false to disable bypass globally (proxy-run will run commands directly).
-ENABLED=true
+ENABLED=true # 改这一行就行
 
 # SOCKS5 proxy URL used when a target matches the whitelist.
+# 注意格式：socks5h://账号:密码@ip:port
+# Attention proxy style：socks5h://user:pass@ip:port
 SOCKS5_PROXY="$DEFAULT_SOCKS5_PROXY"
 EOF
         chmod 644 "$BYPASS_PROXY_CONF"
@@ -311,7 +314,8 @@ load_bypass_enabled() {
     [[ ! -f "$BYPASS_PROXY_CONF" ]] && echo "true" && return 0
     local value
     value=$(grep -E '^[[:space:]]*ENABLED=' "$BYPASS_PROXY_CONF" | tail -n 1 | cut -d '=' -f 2- || true)
-    value=$(echo "$value" | sed -E "s/^[[:space:]]*[\"']?//; s/[\"']?[[:space:]]*$//")
+    # Strip inline comments, then leading/trailing whitespace and quotes
+    value=$(echo "$value" | sed -E "s/#.*$//; s/^[[:space:]]*[\"']?//; s/[\"']?[[:space:]]*$//")
     if [[ "$value" == "false" ]]; then
         echo "false"
     else
@@ -338,14 +342,15 @@ fetch_community_whitelist() {
 
     if [[ "$download_ok" = false ]] || [[ ! -s "$tmp_community" ]]; then
         rm -f "$tmp_community"
-        print_warning "Failed to fetch community whitelist; local file unchanged"
+        print_warning "Failed to fetch community whitelist; local file unchanged/拉取仓库中的白名单失败，本地文件没动，自己找找原因"
         return 1
     fi
 
-    # Rebuild the local whitelist:
-    # - Keep everything before (and including) BYPASS_COMMUNITY_BEGIN
-    # - Replace community section with freshly downloaded content
-    # - Keep everything after (and including) BYPASS_COMMUNITY_END
+    # Rebuild the local whitelist: # 重建本地白名单：
+    # - Keep everything before (and including) BYPASS_COMMUNITY_BEGIN # - 保留（包括）BYPASS_COMMUNITY_BEGIN之前的所有内容
+    # - Replace community section with freshly downloaded content # - 将社区部分替换为最新下载的内容
+    # - Keep everything after (and including) BYPASS_COMMUNITY_END # - 保留（包括）BYPASS_COMMUNITY_END之后的所有内容
+   
     local tmp_new
     tmp_new=$(mktemp)
 
@@ -394,7 +399,7 @@ fetch_community_whitelist() {
 
     local count
     count=$(grep -Ec '^[^#[:space:]]' "$BYPASS_LIST_FILE" || true)
-    print_success "Community whitelist updated ($count entries total in whitelist)"
+    print_success "Community whitelist updated/白名单已更新 ($count entries total in whitelist)"
     return 0
 }
 
@@ -407,7 +412,8 @@ load_socks5_proxy() {
     if [[ -f "$BYPASS_PROXY_CONF" ]]; then
         local value
         value=$(grep -E '^[[:space:]]*SOCKS5_PROXY=' "$BYPASS_PROXY_CONF" | tail -n 1 | cut -d '=' -f 2- || true)
-        value=$(echo "$value" | sed -E "s/^[[:space:]]*[\"']?//; s/[\"']?[[:space:]]*$//")
+        # Strip inline comment, then surrounding whitespace and quotes
+        value=$(echo "$value" | sed -E "s/#.*$//; s/^[[:space:]]*[\"']?//; s/[\"']?[[:space:]]*$//")
         if [[ -n "$value" ]]; then
             echo "$value"
             return 0
@@ -415,6 +421,23 @@ load_socks5_proxy() {
     fi
 
     echo "$DEFAULT_SOCKS5_PROXY"
+}
+
+find_tproxy_script() {
+    local script_dir
+    script_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]:-$0}")")"
+
+    local candidate
+    for candidate in \
+        "$script_dir/transparent_proxy.sh" \
+        "$script_dir/cdn-ip-ban-tproxy" \
+        "/usr/local/bin/cdn-ip-ban-tproxy"; do
+        if [[ -x "$candidate" ]]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
 }
 
 target_in_bypass_list() {
@@ -470,8 +493,8 @@ guess_target_from_args() {
 
 proxy_run() {
     if [[ ${#COMMAND_ARGS[@]} -eq 0 ]]; then
-        print_error "proxy-run requires a command to execute"
-        print_info "Example: $SCRIPT_NAME proxy-run --target=example.com -- curl -I https://example.com"
+        print_error "proxy-run requires a command to execute/看看你是不是缺了啥参数"
+        print_info "Example/给你举个例子: $SCRIPT_NAME proxy-run --target=example.com -- curl -I https://example.com"
         exit 1
     fi
 
@@ -489,8 +512,8 @@ proxy_run() {
     fi
 
     if [[ -z "$target" ]]; then
-        print_error "Cannot determine target host/IP for proxy decision"
-        print_info "Use --target=HOST to specify a domain/IP explicitly"
+        print_error "Cannot determine target host/IP for proxy decision/找不到代理目标"
+        print_info "Use --target=HOST to specify a domain/IP explicitly # 调整参数试试"
         exit 1
     fi
 
@@ -519,7 +542,7 @@ bypass_init() {
 bypass_update() {
     check_root
     if [[ ! -f "$BYPASS_LIST_FILE" ]]; then
-        print_info "Whitelist file not found; running bypass-init first"
+        print_info "Whitelist file not found; running bypass-init first # 找不到白名单文件，先执行bypass-init命令初始化"
         ensure_bypass_files
         return
     fi
@@ -530,6 +553,7 @@ bypass_status() {
     echo ""
     echo "=========================================="
     echo "  Optional SOCKS5 Bypass Status"
+    echo "  目前S5代理状态"
     echo "=========================================="
     echo ""
 
@@ -561,7 +585,7 @@ bypass_status() {
         echo -e "  ${BLUE}- Community entries:${NC}  $community"
         echo -e "  ${BLUE}- User entries:${NC}       $user_count"
     else
-        print_warning "Whitelist file not found: $BYPASS_LIST_FILE"
+        print_warning "Whitelist file not found/白名单文件没找到: $BYPASS_LIST_FILE"
     fi
 
     echo ""
@@ -774,7 +798,7 @@ download_provider_ips() {
 
     print_info "Downloading $name IP list..."
     if [[ "$provider" == "akamai" ]] && [[ "$url" == *"raw.githubusercontent.com"* ]]; then
-        print_warning "Akamai list source is a third-party GitHub repo. Consider overriding AKAMAI_IP_LIST_URL."
+        print_warning "Akamai list source is a third-party GitHub repo. Consider overriding AKAMAI_IP_LIST_URL. # 你可以自行维护Akamai的cdn源，目前的源也是github维护的第三方仓库"
     fi
 
     # Create directory if it doesn't exist
@@ -979,7 +1003,7 @@ apply_provider_rules() {
             ipset swap "$set_v6_new" "$set_v6"
             ipset destroy "$set_v6_new" 2>/dev/null || true
         else
-            print_warning "IPv6 requested but ip6tables is unavailable; IPv6 blocking is skipped"
+            print_warning "IPv6 requested but ip6tables is unavailable; IPv6 blocking is skipped # 封锁ipv6需要ip6tables这个工具，自己检查"
             ipset destroy "$set_v6_new" 2>/dev/null || true
         fi
     else
@@ -1002,7 +1026,7 @@ apply_provider_rules() {
 }
 
 save_rules() {
-    print_info "Saving iptables/ipset rules..."
+    print_info "Saving iptables/ipset rules... # iptables已保存"
 
     if command -v netfilter-persistent &> /dev/null; then
         netfilter-persistent save
@@ -1015,7 +1039,7 @@ save_rules() {
         fi
         if command -v ipset &> /dev/null; then
             ipset save > /etc/iptables/ipset.rules 2>/dev/null || \
-            print_warning "Could not save ipset rules to /etc/iptables/ipset.rules"
+            print_warning "Could not save ipset rules to /etc/iptables/ipset.rules/保存规则失效."
         fi
     fi
 
@@ -1134,7 +1158,7 @@ show_provider_status() {
             echo -e "  ${BLUE}-${NC} IPv6 OUTPUT rule: ${RED}no${NC}"
         fi
     else
-        print_warning "ip6tables not available; IPv6 rule status unavailable"
+        print_warning "ip6tables not available; IPv6 rule status unavailable/安装一下ip6tables，apt install ip6tables -y"
     fi
 
     echo ""
@@ -1189,9 +1213,21 @@ install_blocking() {
     fi
 
     if [[ $failed -gt 0 ]]; then
-        print_warning "Installation completed with $failed error(s)"
+        print_warning "Installation completed with $failed error(s)/安装出了点问题，看看什么原因？"
     else
-        print_success "Installation complete!"
+        print_success "Installation complete!/安装完毕！"
+    fi
+
+    if [[ "$PROXY_AUTO" = true ]]; then
+        local tproxy_script
+        if tproxy_script=$(find_tproxy_script 2>/dev/null); then
+            print_info "Setting up transparent proxy (PROXY_AUTO=true)..."
+            "$tproxy_script" install || \
+                print_warning "Transparent proxy setup failed; CDN blocking is still active"
+        else
+            print_warning "Transparent proxy script not found; skipping (PROXY_AUTO=true)"
+            print_info "Set PROXY_AUTO=false in $SCRIPT_NAME or install cdn-ip-ban-tproxy"
+        fi
     fi
 
     print_info "Run '$SCRIPT_NAME status' to verify the configuration"
@@ -1199,6 +1235,14 @@ install_blocking() {
 
 uninstall_blocking() {
     print_info "Uninstalling CDN IP blocking..."
+
+    if [[ "$PROXY_AUTO" = true ]]; then
+        local tproxy_script
+        if tproxy_script=$(find_tproxy_script 2>/dev/null); then
+            print_info "Removing transparent proxy (PROXY_AUTO=true)..."
+            "$tproxy_script" uninstall 2>/dev/null || true
+        fi
+    fi
 
     validate_selected_providers
     local providers
@@ -1212,14 +1256,16 @@ uninstall_blocking() {
     if [[ -d "$IP_LIST_DIR" ]] && [[ -z "$(ls -A "$IP_LIST_DIR")" ]]; then
         rmdir "$IP_LIST_DIR"
         print_info "Removed IP list directory"
+        print_info "IP表目录已移除"
     fi
 
     save_rules
     print_success "Uninstallation complete!"
+    print_success "卸载完成!"
 }
 
 update_blocking() {
-    print_info "Updating CDN IP blocking rules..."
+    print_info "Updating CDN IP blocking rules.../更新完成"
 
     check_dependencies
     validate_selected_providers
@@ -1250,9 +1296,9 @@ update_blocking() {
     fi
 
     if [[ $failed -gt 0 ]]; then
-        print_warning "Update completed with $failed error(s)"
+        print_warning "Update completed with $failed error(s)/出问题了，看看什么原因"
     else
-        print_success "Update complete!"
+        print_success "Update complete!/更新完成！"
     fi
 }
 
@@ -1262,61 +1308,76 @@ Usage: $SCRIPT_NAME [COMMAND] [OPTIONS]
        $SCRIPT_NAME proxy-run [--target=HOST] [--socks5=URL] -- command [args...]
 
 Commands:
-    install     Download IP lists and install blocking rules
-    uninstall   Remove all blocking rules and clean up
-    update      Update IP lists and refresh blocking rules
-    status      Show current blocking status
-    bypass-init   Initialize optional SOCKS5 bypass files and pull community whitelist
-    bypass-update Pull latest community whitelist from repository (requires root)
-    bypass-status Show optional SOCKS5 bypass status
-    proxy-run     Run one command; if ENABLED=true and target hits whitelist, use SOCKS5
-    help        Display this help message
+    install     Download IP lists and install blocking rules # 安装
+    uninstall   Remove all blocking rules and clean up # 卸载
+    update      Update IP lists and refresh blocking rules # 更新
+    status      Show current blocking status # 当前状态
+    bypass-init   Initialize optional SOCKS5 bypass files and pull community whitelist # 初始化代理，从仓库拉取白名单
+    bypass-update Pull latest community whitelist from repository (requires root) # 从仓库更新白名单，需要root权限
+    bypass-status Show optional SOCKS5 bypass status # S5代理状态
+    proxy-run     Run one command; if ENABLED=true and target hits whitelist, use SOCKS5 # 使用S5代理访问被ban对象
+    help        Display this help message # 帮助
 
 Options:
-    --provider=PROVIDER   Specify CDN provider to manage
+    --provider=PROVIDER   Specify CDN provider to manage # 封锁哪一家的CDN，默认all（akamai, fastly, cloudflare）
                           Values: akamai, fastly, cloudflare, all (default: all)
                           Multiple: --provider=akamai,fastly,cloudflare
 
-    --ipv6                Include IPv6 addresses (default: IPv4 only)
+    --ipv6                Include IPv6 addresses (default: IPv4 only) # 是否封锁CDN的IPV6对象
     --target=HOST         Target host/IP/URL used by proxy-run decision
-    --socks5=URL          Override SOCKS5 URL for current proxy-run
+    --socks5=URL          Override SOCKS5 URL for current proxy-run # 覆盖当前的S5代理
+
+Script variables (edit cdn_ip_ban.sh to change defaults):
+    ENABLE_IPV6=true      Block IPv6 CDN ranges by default
+    PROXY_AUTO=true       Auto-install/remove transparent proxy on install/uninstall
+                          Requires cdn-ip-ban-tproxy in PATH or same directory
 
 Examples:
     # Install blocking for all CDN providers
+    # 安装，默认（akamai, fastly, cloudflare）三家的CDN
     sudo $SCRIPT_NAME install
 
     # Install blocking for Akamai only
+    # 仅Akamai
     sudo $SCRIPT_NAME install --provider=akamai
 
     # Install blocking for Cloudflare with IPv6
+    # 封锁Cloudflare的IPV6
     sudo $SCRIPT_NAME install --provider=cloudflare --ipv6
 
     # Install blocking for multiple providers
+    # 封锁Cloudflare和akamai的IPV6
     sudo $SCRIPT_NAME install --provider=akamai,cloudflare --ipv6
 
     # Update all providers
+    # 更新
     sudo $SCRIPT_NAME update
 
     # Check status
+    # 查看状态
     $SCRIPT_NAME status
 
     # Uninstall Cloudflare only
+    # 卸载Cloudflare对应的规则
     sudo $SCRIPT_NAME uninstall --provider=cloudflare
 
     # Initialize optional bypass files (also pulls community whitelist)
+    # 初始化代理（从官方仓库拉取白名单）
     sudo $SCRIPT_NAME bypass-init
 
     # Update community whitelist from repository
+    # 同步仓库维护的白名单
     sudo $SCRIPT_NAME bypass-update
 
     # Run one command with optional SOCKS5 bypass
+    # 一键测试S5绕过
     $SCRIPT_NAME proxy-run --target=example.com -- curl -I https://example.com
     $SCRIPT_NAME proxy-run -- curl -I https://example.com
 
-    # Disable bypass globally without touching the whitelist
-    # Edit /etc/cdn_bypass_proxy.conf and set ENABLED=false
+    # Disable bypass globally without touching the whitelist 
+    # Edit /etc/cdn_bypass_proxy.conf and set ENABLED=false # 编辑/etc/cdn_bypass_proxy.conf里的ENABLED=false
 
-Supported CDN Providers (ipset names):
+Supported CDN Providers (ipset names)/目前封锁的三家CDN:
     - Akamai      (AKAMAI_BLOCK_V4 / AKAMAI_BLOCK_V6)
     - Fastly      (FASTLY_BLOCK_V4 / FASTLY_BLOCK_V6)
     - Cloudflare  (CLOUDFLARE_BLOCK_V4 / CLOUDFLARE_BLOCK_V6)
@@ -1398,6 +1459,12 @@ main() {
         status)
             show_status
             bypass_status
+            if [[ "$PROXY_AUTO" = true ]]; then
+                local tproxy_script
+                if tproxy_script=$(find_tproxy_script 2>/dev/null); then
+                    "$tproxy_script" status
+                fi
+            fi
             ;;
         bypass-init)
             bypass_init
@@ -1415,13 +1482,13 @@ main() {
             show_usage
             ;;
         "")
-            print_error "No command specified"
+            print_error "No command specified/看看缺了啥参数"
             echo ""
             show_usage
             exit 1
             ;;
         *)
-            print_error "Unknown command: $COMMAND"
+            print_error "Unknown command/就没有这个命令，查查help: $COMMAND"
             echo ""
             show_usage
             exit 1
