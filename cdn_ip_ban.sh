@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 
 ################################################################################
 # cdn_ip_ban.sh - Block CDN IP addresses using iptables
