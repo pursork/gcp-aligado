@@ -1184,6 +1184,22 @@ install_blocking() {
 
     check_dependencies
     ensure_bypass_files
+
+    # Install transparent proxy BEFORE applying CDN block rules.
+    # apt-get (used by tp_check_deps) needs network access to deb.debian.org (Fastly CDN).
+    # If we apply CDN DROP rules first, apt will be blocked and redsocks installation fails.
+    if [[ "$PROXY_AUTO" = true ]]; then
+        local tproxy_script
+        if tproxy_script=$(find_tproxy_script 2>/dev/null); then
+            print_info "Setting up transparent proxy (PROXY_AUTO=true)..."
+            "$tproxy_script" install || \
+                print_warning "Transparent proxy setup failed; CDN blocking is still active"
+        else
+            print_warning "Transparent proxy script not found; skipping (PROXY_AUTO=true)"
+            print_info "Set PROXY_AUTO=false in $SCRIPT_NAME or install cdn-ip-ban-tproxy"
+        fi
+    fi
+
     validate_selected_providers
 
     local providers
@@ -1216,18 +1232,6 @@ install_blocking() {
         print_warning "Installation completed with $failed error(s)/安装出了点问题，看看什么原因？"
     else
         print_success "Installation complete!/安装完毕！"
-    fi
-
-    if [[ "$PROXY_AUTO" = true ]]; then
-        local tproxy_script
-        if tproxy_script=$(find_tproxy_script 2>/dev/null); then
-            print_info "Setting up transparent proxy (PROXY_AUTO=true)..."
-            "$tproxy_script" install || \
-                print_warning "Transparent proxy setup failed; CDN blocking is still active"
-        else
-            print_warning "Transparent proxy script not found; skipping (PROXY_AUTO=true)"
-            print_info "Set PROXY_AUTO=false in $SCRIPT_NAME or install cdn-ip-ban-tproxy"
-        fi
     fi
 
     print_info "Run '$SCRIPT_NAME status' to verify the configuration"
