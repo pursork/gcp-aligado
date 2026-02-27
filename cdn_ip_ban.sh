@@ -37,6 +37,9 @@ readonly IP_LIST_DIR="/etc/cdn_blocked_ips"
 readonly BYPASS_LIST_FILE="/etc/cdn_bypass_white.list"
 readonly BYPASS_PROXY_CONF="/etc/cdn_bypass_proxy.conf"
 readonly DEFAULT_SOCKS5_PROXY="socks5h://127.0.0.1:1080"
+readonly BYPASS_COMMUNITY_URL="https://raw.githubusercontent.com/pursork/gcp-aligado/main/bypass_white.list"
+readonly BYPASS_COMMUNITY_BEGIN="# == community entries (auto-synced, do not edit this section manually) =="
+readonly BYPASS_COMMUNITY_END="# == end community entries =="
 
 # CDN Provider Configurations
 declare -A CDN_PROVIDERS=(
@@ -229,26 +232,37 @@ ensure_bypass_files() {
     local created_any=false
 
     if [[ ! -f "$BYPASS_LIST_FILE" ]]; then
-        cat > "$BYPASS_LIST_FILE" << 'EOF'
+        cat > "$BYPASS_LIST_FILE" << EOF
 # CDN bypass whitelist
 # One entry per line. Blank lines and # comments are ignored.
 #
-# Domain suffix match:
-# example.com
-# api.example.com
+# Domain suffix match:  example.com  (also matches sub.example.com)
+# Exact IP match:       203.0.113.10
 #
-# Exact IP match:
-# 203.0.113.10
-# 2001:db8::1
+# The community section below is managed automatically by bypass-init / bypass-update.
+# Add your own entries AFTER the community section.
+
+$BYPASS_COMMUNITY_BEGIN
+$BYPASS_COMMUNITY_END
+
+# --- User custom entries ---
 EOF
         chmod 644 "$BYPASS_LIST_FILE"
         created_any=true
         print_info "Created whitelist file: $BYPASS_LIST_FILE"
+        # Populate community section immediately
+        fetch_community_whitelist || true
     fi
 
     if [[ ! -f "$BYPASS_PROXY_CONF" ]]; then
         cat > "$BYPASS_PROXY_CONF" << EOF
-# SOCKS5 proxy used by proxy-run when a target matches $BYPASS_LIST_FILE
+# Bypass configuration for cdn_ip_ban.sh
+#
+# ENABLED: set to true to activate SOCKS5 bypass for whitelisted targets.
+#          Set to false to disable bypass globally (proxy-run will run commands directly).
+ENABLED=true
+
+# SOCKS5 proxy URL used when a target matches the whitelist.
 SOCKS5_PROXY="$DEFAULT_SOCKS5_PROXY"
 EOF
         chmod 644 "$BYPASS_PROXY_CONF"
@@ -291,6 +305,97 @@ normalize_host() {
     fi
 
     echo "$host" | tr '[:upper:]' '[:lower:]'
+}
+
+load_bypass_enabled() {
+    [[ ! -f "$BYPASS_PROXY_CONF" ]] && echo "true" && return 0
+    local value
+    value=$(grep -E '^[[:space:]]*ENABLED=' "$BYPASS_PROXY_CONF" | tail -n 1 | cut -d '=' -f 2- || true)
+    value=$(echo "$value" | sed -E "s/^[[:space:]]*[\"']?//; s/[\"']?[[:space:]]*$//")
+    if [[ "$value" == "false" ]]; then
+        echo "false"
+    else
+        echo "true"
+    fi
+}
+
+fetch_community_whitelist() {
+    print_info "Fetching community whitelist from $BYPASS_COMMUNITY_URL ..."
+
+    local tmp_community
+    tmp_community=$(mktemp)
+    local download_ok=false
+
+    if command -v curl &> /dev/null; then
+        if curl -fsSL --connect-timeout 30 --max-time 60 "$BYPASS_COMMUNITY_URL" -o "$tmp_community"; then
+            download_ok=true
+        fi
+    elif command -v wget &> /dev/null; then
+        if wget -q --timeout=60 "$BYPASS_COMMUNITY_URL" -O "$tmp_community"; then
+            download_ok=true
+        fi
+    fi
+
+    if [[ "$download_ok" = false ]] || [[ ! -s "$tmp_community" ]]; then
+        rm -f "$tmp_community"
+        print_warning "Failed to fetch community whitelist; local file unchanged"
+        return 1
+    fi
+
+    # Rebuild the local whitelist:
+    # - Keep everything before (and including) BYPASS_COMMUNITY_BEGIN
+    # - Replace community section with freshly downloaded content
+    # - Keep everything after (and including) BYPASS_COMMUNITY_END
+    local tmp_new
+    tmp_new=$(mktemp)
+
+    if [[ -f "$BYPASS_LIST_FILE" ]]; then
+        # Output lines before and including the BEGIN marker
+        local in_community=false
+        local found_begin=false
+        local found_end=false
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" == "$BYPASS_COMMUNITY_BEGIN" ]]; then
+                found_begin=true
+                in_community=true
+                echo "$line" >> "$tmp_new"
+                # Insert fresh community content
+                grep -Ev '^[[:space:]]*(#|$)' "$tmp_community" >> "$tmp_new" || true
+                continue
+            fi
+            if [[ "$line" == "$BYPASS_COMMUNITY_END" ]]; then
+                in_community=false
+                found_end=true
+                echo "$line" >> "$tmp_new"
+                continue
+            fi
+            if [[ "$in_community" = false ]]; then
+                echo "$line" >> "$tmp_new"
+            fi
+        done < "$BYPASS_LIST_FILE"
+
+        # If markers weren't present, append the section at the end
+        if [[ "$found_begin" = false ]]; then
+            echo "" >> "$tmp_new"
+            echo "$BYPASS_COMMUNITY_BEGIN" >> "$tmp_new"
+            grep -Ev '^[[:space:]]*(#|$)' "$tmp_community" >> "$tmp_new" || true
+            echo "$BYPASS_COMMUNITY_END" >> "$tmp_new"
+        fi
+    else
+        # File doesn't exist yet; build from scratch
+        echo "$BYPASS_COMMUNITY_BEGIN" >> "$tmp_new"
+        grep -Ev '^[[:space:]]*(#|$)' "$tmp_community" >> "$tmp_new" || true
+        echo "$BYPASS_COMMUNITY_END" >> "$tmp_new"
+    fi
+
+    rm -f "$tmp_community"
+    mv "$tmp_new" "$BYPASS_LIST_FILE"
+    chmod 644 "$BYPASS_LIST_FILE"
+
+    local count
+    count=$(grep -Ec '^[^#[:space:]]' "$BYPASS_LIST_FILE" || true)
+    print_success "Community whitelist updated ($count entries total in whitelist)"
+    return 0
 }
 
 load_socks5_proxy() {
@@ -370,6 +475,14 @@ proxy_run() {
         exit 1
     fi
 
+    local enabled
+    enabled=$(load_bypass_enabled)
+    if [[ "$enabled" != "true" ]]; then
+        print_info "Bypass disabled (ENABLED=false in $BYPASS_PROXY_CONF), running command directly"
+        "${COMMAND_ARGS[@]}"
+        return
+    fi
+
     local target="$PROXY_TARGET"
     if [[ -z "$target" ]]; then
         target=$(guess_target_from_args "${COMMAND_ARGS[@]}" || true)
@@ -403,6 +516,16 @@ bypass_init() {
     ensure_bypass_files
 }
 
+bypass_update() {
+    check_root
+    if [[ ! -f "$BYPASS_LIST_FILE" ]]; then
+        print_info "Whitelist file not found; running bypass-init first"
+        ensure_bypass_files
+        return
+    fi
+    fetch_community_whitelist
+}
+
 bypass_status() {
     echo ""
     echo "=========================================="
@@ -410,22 +533,35 @@ bypass_status() {
     echo "=========================================="
     echo ""
 
-    if [[ -f "$BYPASS_LIST_FILE" ]]; then
-        local count
-        count=$(grep -Evc '^[[:space:]]*(#|$)' "$BYPASS_LIST_FILE" || true)
-        count="${count:-0}"
-        print_success "Whitelist file: $BYPASS_LIST_FILE ($count entries)"
-    else
-        print_warning "Whitelist file not found: $BYPASS_LIST_FILE"
-    fi
-
     if [[ -f "$BYPASS_PROXY_CONF" ]]; then
-        local proxy_url
+        local enabled proxy_url
+        enabled=$(load_bypass_enabled)
         proxy_url=$(load_socks5_proxy)
         print_success "Proxy config file: $BYPASS_PROXY_CONF"
+        if [[ "$enabled" == "true" ]]; then
+            echo -e "  ${BLUE}- Bypass enabled:${NC}     ${GREEN}true${NC}"
+        else
+            echo -e "  ${BLUE}- Bypass enabled:${NC}     ${RED}false${NC}"
+        fi
         echo -e "  ${BLUE}- Active SOCKS5 proxy:${NC} $proxy_url"
     else
         print_warning "Proxy config file not found: $BYPASS_PROXY_CONF"
+        echo -e "  ${BLUE}- Bypass enabled:${NC}     ${YELLOW}unknown (file missing)${NC}"
+    fi
+
+    echo ""
+
+    if [[ -f "$BYPASS_LIST_FILE" ]]; then
+        local total community user_count
+        total=$(grep -Evc '^[[:space:]]*(#|$)' "$BYPASS_LIST_FILE" || true)
+        community=$(awk "/$BYPASS_COMMUNITY_BEGIN/{found=1; next} /$BYPASS_COMMUNITY_END/{found=0} found && /^[^#[:space:]]/" "$BYPASS_LIST_FILE" | wc -l || true)
+        user_count=$((total - community))
+        print_success "Whitelist file: $BYPASS_LIST_FILE"
+        echo -e "  ${BLUE}- Total entries:${NC}      $total"
+        echo -e "  ${BLUE}- Community entries:${NC}  $community"
+        echo -e "  ${BLUE}- User entries:${NC}       $user_count"
+    else
+        print_warning "Whitelist file not found: $BYPASS_LIST_FILE"
     fi
 
     echo ""
@@ -1130,10 +1266,10 @@ Commands:
     uninstall   Remove all blocking rules and clean up
     update      Update IP lists and refresh blocking rules
     status      Show current blocking status
-    bypass-init Initialize optional SOCKS5 bypass files
-    bypass-status
-                Show optional SOCKS5 bypass status
-    proxy-run   Run one command; if target hits whitelist, use SOCKS5
+    bypass-init   Initialize optional SOCKS5 bypass files and pull community whitelist
+    bypass-update Pull latest community whitelist from repository (requires root)
+    bypass-status Show optional SOCKS5 bypass status
+    proxy-run     Run one command; if ENABLED=true and target hits whitelist, use SOCKS5
     help        Display this help message
 
 Options:
@@ -1167,12 +1303,18 @@ Examples:
     # Uninstall Cloudflare only
     sudo $SCRIPT_NAME uninstall --provider=cloudflare
 
-    # Initialize optional bypass files
+    # Initialize optional bypass files (also pulls community whitelist)
     sudo $SCRIPT_NAME bypass-init
+
+    # Update community whitelist from repository
+    sudo $SCRIPT_NAME bypass-update
 
     # Run one command with optional SOCKS5 bypass
     $SCRIPT_NAME proxy-run --target=example.com -- curl -I https://example.com
     $SCRIPT_NAME proxy-run -- curl -I https://example.com
+
+    # Disable bypass globally without touching the whitelist
+    # Edit /etc/cdn_bypass_proxy.conf and set ENABLED=false
 
 Supported CDN Providers (ipset names):
     - Akamai      (AKAMAI_BLOCK_V4 / AKAMAI_BLOCK_V6)
@@ -1190,7 +1332,7 @@ parse_arguments() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            install|uninstall|update|status|help|proxy-run|bypass-init|bypass-status)
+            install|uninstall|update|status|help|proxy-run|bypass-init|bypass-update|bypass-status)
                 if [[ -z "$COMMAND" ]]; then
                     COMMAND="$1"
                 else
@@ -1259,6 +1401,9 @@ main() {
             ;;
         bypass-init)
             bypass_init
+            ;;
+        bypass-update)
+            bypass_update
             ;;
         bypass-status)
             bypass_status

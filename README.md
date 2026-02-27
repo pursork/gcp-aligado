@@ -205,44 +205,99 @@ sudo ./cdn_ip_ban.sh --provider=cloudflare --ipv6 install
 
 ## 12. Optional SOCKS5 Bypass (按应用/命令分流)
 
-脚本新增了可选 bypass 能力，不依赖 sing-box/clash/redsocks：
+脚本内置可选 bypass 能力，无需 sing-box/clash/redsocks：
 
 - 白名单文件：`/etc/cdn_bypass_white.list`
 - 代理配置：`/etc/cdn_bypass_proxy.conf`
 - 运行命令：`proxy-run`
 
-初始化（`install` 时会自动创建，也可手动执行）：
+### 12.1 初始化
+
+`install` 时会自动创建配置文件并从仓库拉取社区白名单，也可手动执行：
 
 ```bash
 sudo ./cdn_ip_ban.sh bypass-init
 ```
 
-白名单示例（每行一个，支持域名后缀和精确 IP）：
+### 12.2 ENABLED 开关
 
-```text
-# domain suffix
-example.com
-api.example.com
+`/etc/cdn_bypass_proxy.conf` 包含 `ENABLED` 字段，可一键全局开关 bypass：
 
-# exact IP
-203.0.113.10
-2001:db8::1
+```ini
+# 开启（默认）
+ENABLED=true
+SOCKS5_PROXY=”socks5h://127.0.0.1:1080”
+
+# 关闭：proxy-run 将直接执行命令，不再检查白名单
+ENABLED=false
 ```
 
-按需分流执行（命中白名单才走 SOCKS5）：
+修改后立即生效，无需重启脚本。
+
+### 12.3 社区白名单与自定义条目
+
+白名单文件分为两个区域：
+
+```text
+# == community entries (auto-synced, do not edit this section manually) ==
+github.com
+google.com
+...（由仓库维护）
+# == end community entries ==
+
+# --- User custom entries ---
+myserver.example.com
+203.0.113.10
+```
+
+- **社区区域**：由 `bypass-init` / `bypass-update` 自动从仓库拉取，覆盖该区域内容
+- **用户区域**：写在社区区域下方，不受自动更新影响
+
+更新社区白名单：
 
 ```bash
-./cdn_ip_ban.sh proxy-run --target=example.com -- curl -I https://example.com
-./cdn_ip_ban.sh proxy-run -- curl -I https://example.com
+sudo ./cdn_ip_ban.sh bypass-update
+```
+
+### 12.4 查看状态
+
+```bash
+./cdn_ip_ban.sh bypass-status
+```
+
+输出示例：
+
+```
+==========================================
+  Optional SOCKS5 Bypass Status
+
+  Proxy config: /etc/cdn_bypass_proxy.conf
+  - Bypass enabled:     true
+  - Active SOCKS5 proxy: socks5h://127.0.0.1:1080
+
+  Whitelist: /etc/cdn_bypass_white.list
+  - Total entries:      65
+  - Community entries:  60
+  - User entries:       5
+==========================================
+```
+
+### 12.5 按需分流执行
+
+命中白名单的目标走 SOCKS5，其余直接执行：
+
+```bash
+./cdn_ip_ban.sh proxy-run --target=github.com -- curl -I https://github.com
+./cdn_ip_ban.sh proxy-run -- curl -I https://github.com   # 自动从 URL 推断目标
 ```
 
 临时覆盖代理地址：
 
 ```bash
-./cdn_ip_ban.sh proxy-run --socks5=socks5h://127.0.0.1:1081 --target=example.com -- curl -I https://example.com
+./cdn_ip_ban.sh proxy-run --socks5=socks5h://127.0.0.1:1081 --target=github.com -- curl -I https://github.com
 ```
 
-边界：该能力是“按命令分流”，不是全系统透明代理。
+> **说明**：该能力是”按命令分流”，不是全系统透明代理。SOCKS5 代理服务需自行部署（如 SSH 本地隧道 `ssh -fN -D 1080 user@remote`）。
 
 ## 13. 一键封装安装
 

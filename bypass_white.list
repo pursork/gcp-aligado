@@ -1,0 +1,112 @@
+# CDN bypass whitelist - Community maintained
+# Repository: https://github.com/pursork/gcp-aligado
+#
+# This file is the upstream community list. It is downloaded and merged
+# into /etc/cdn_bypass_white.list on the host during bypass-init / bypass-update.
+#
+# Format:
+#   - One entry per line
+#   - Blank lines and # comments are ignored
+#   - Domain suffix match:  example.com  (also matches sub.example.com)
+#   - Exact IP match:       203.0.113.10
+
+# --- Version control / code hosting ---
+github.com
+raw.githubusercontent.com
+api.github.com
+codeload.github.com
+objects.githubusercontent.com
+pkg.github.com
+ghcr.io
+githubassets.com
+gitlab.com
+bitbucket.org
+
+# --- Google services ---
+google.com
+googleapis.com
+googlevideo.com
+googleusercontent.com
+gstatic.com
+google-analytics.com
+googletagmanager.com
+goo.gl
+ggpht.com
+
+# --- YouTube ---
+youtube.com
+youtu.be
+ytimg.com
+yt3.ggpht.com
+
+# --- Google Cloud / GCP ---
+storage.googleapis.com
+gcr.io
+pkg.dev
+
+# --- Cloudflare (CDN blocked locally, but needed for script self-update) ---
+cloudflare.com
+dash.cloudflare.com
+api.cloudflare.com
+
+# --- npm / Node.js ---
+registry.npmjs.org
+npmjs.com
+
+# --- Python / PyPI ---
+pypi.org
+files.pythonhosted.org
+
+# --- Docker ---
+registry-1.docker.io
+auth.docker.io
+index.docker.io
+hub.docker.com
+
+# --- Terraform / HashiCorp ---
+registry.terraform.io
+releases.hashicorp.com
+checkpoint-api.hashicorp.com
+
+# --- Kubernetes ---
+k8s.io
+storage.k8s.io
+dl.k8s.io
+
+# --- Common developer tools ---
+golang.org
+go.dev
+proxy.golang.org
+sum.golang.org
+crates.io
+static.crates.io
+
+# --- Homebrew (macOS / Linux) ---
+formulae.brew.sh
+ghcr.io
+
+# --- Slack ---
+slack.com
+slack-edge.com
+
+# --- Twitter / X ---
+twitter.com
+x.com
+t.co
+
+# --- Telegram ---
+telegram.org
+t.me
+api.telegram.org
+
+# --- OpenAI / Anthropic ---
+openai.com
+api.openai.com
+anthropic.com
+api.anthropic.com
+
+# --- Misc CDN / infra ---
+fastly.net
+jsdelivr.net
+unpkg.com
+cdnjs.cloudflare.com
